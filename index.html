@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Auto Rally</title>
+<style>
+html,body{margin:0;height:100%;background:#15181f;overflow:hidden;overscroll-behavior:none}
+body{display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#wrap{position:relative;width:min(100vw,calc(100vh * 2 / 3));width:min(100vw,calc(100dvh * 2 / 3));aspect-ratio:2/3}
+canvas{display:block;width:100%;height:100%;touch-action:none;user-select:none;-webkit-user-select:none}
+#mute{position:absolute;top:8px;right:8px;font:600 13px/1 system-ui,sans-serif;padding:8px 10px;border:0;border-radius:8px;background:rgba(20,24,31,.75);color:#fff;cursor:pointer}
+#mute:focus-visible{outline:3px solid #ffd23f}
+</style>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#15181f">
+<link rel="icon" href="icon-192.png">
+</head>
+<body>
+<div id="wrap"><canvas id="c" aria-label="Auto Rally game"></canvas><button id="mute" type="button"></button></div>
+<script>
+const cv=document.getElementById('c'),g=cv.getContext('2d'),W=480,H=720,HZ=270;
+cv.width=W;cv.height=H;
+const L=18000,LAPS=3,MAXV=900,CAM=60;
+const store={get(k){try{return localStorage.getItem('autorally-'+k)}catch(e){return null}},set(k,v){try{localStorage.setItem('autorally-'+k,v)}catch(e){}}};
+let best=parseFloat(store.get('best'))||0,muted=store.get('mute')==='1';
+let state='ready',z=0,x=0,v=0,t=0,coins=0,lap=1,boost=0,inv=0,shake=0,cd=3,dir=0,banner='',bannerT=0,isBest=false,lapTimes=[],lapStart=0;
+const keys={};
+let objs=[];
+
+function gen(){
+ let s=12345;
+ const r=()=>{s=(s+0x6D2B79F5)|0;let a=Math.imul(s^s>>>15,1|s);a=a+Math.imul(a^a>>>7,61|a)^a;return((a^a>>>14)>>>0)/4294967296};
+ const lanes=[-.6,0,.6];let cl=1;const out=[];
+ for(let p=900;p<L-600;p+=330){
+  const q=r();
+  if(q<.32)out.push({z:p,x:lanes[(r()*3)|0],k:'rock',on:true});
+  else if(q<.4)out.push({z:p,x:lanes[(r()*3)|0],k:'boost',on:true});
+  else{if(r()<.4)cl=(r()*3)|0;for(let i=0;i<3;i++)out.push({z:p+i*60,x:lanes[cl],k:'coin',on:true})}
+ }
+ return out;
+}
+
+/* sound */
+let ac=null;
+function beep(f,d,type,vol){
+ if(muted)return;
+ try{
+  ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+  const o=ac.createOscillator(),gn=ac.createGain();
+  o.type=type||'square';o.frequency.value=f;gn.gain.value=vol||.05;
+  gn.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+d);
+  o.connect(gn);gn.connect(ac.destination);o.start();o.stop(ac.currentTime+d);
+ }catch(e){}
+}
+const muteBtn=document.getElementById('mute');
+function paintMute(){muteBtn.textContent=muted?'Sound off':'Sound on'}
+muteBtn.onclick=()=>{muted=!muted;store.set('mute',muted?'1':'0');paintMute()};
+paintMute();
+
+/* game flow */
+function start(){
+ objs=gen();z=0;x=0;v=0;t=0;coins=0;lap=1;boost=0;inv=0;shake=0;cd=3;lapTimes=[];lapStart=0;banner='';
+ state='count';
+ try{ac=ac||new (window.AudioContext||window.webkitAudioContext)()}catch(e){}
+}
+function fmt(s){const m=Math.floor(s/60);return m+':'+(s%60).toFixed(2).padStart(5,'0')}
+
+const road=zz=>Math.sin(zz*.0009)*.9+Math.sin(zz*.0023)*.4;
+
+function update(dt){
+ shake=Math.max(0,shake-dt*3);inv-=dt;bannerT-=dt;
+ if(state==='count'){
+  const before=Math.ceil(cd);cd-=dt;
+  if(Math.ceil(cd)!==before&&cd>0)beep(520,.12);
+  if(cd<=0){state='race';beep(900,.3)}
+  return;
+ }
+ if(state!=='race')return;
+ t+=dt;boost-=dt;
+ const target=MAXV*(boost>0?1.45:1);
+ v+=(target-v)*Math.min(1,dt*1.1);
+ const s=(keys.left?-1:0)+(keys.right?1:0)+dir;
+ x=Math.max(-.92,Math.min(.92,x+s*1.7*dt*(.5+.5*v/MAXV)));
+ z+=v*dt;
+ const newLap=Math.floor(z/L)+1;
+ if(z>=L*LAPS){return finish()}
+ if(newLap>lap){
+  lapTimes.push(t-lapStart);banner='Lap '+lap+' done: '+fmt(t-lapStart);bannerT=1.6;lapStart=t;lap=newLap;
+  objs.forEach(o=>o.on=true);beep(700,.15);setTimeout(()=>beep(1000,.2),150);
+ }
+ const zm=z%L;
+ for(const o of objs){
+  if(!o.on)continue;
+  const d=(o.z-zm+L)%L;
+  if(d<30||d>110)continue;
+  const hit=Math.abs(o.x-x)<(o.k==='rock'?.26:.3);
+  if(!hit)continue;
+  o.on=false;
+  if(o.k==='coin'){coins++;beep(1250,.07,'square',.04)}
+  else if(o.k==='boost'){boost=2;banner='Boost!';bannerT=.9;beep(600,.3,'sawtooth')}
+  else if(inv<=0){v*=.35;inv=1;shake=1;beep(110,.3,'sawtooth',.09)}
+ }
+}
+function finish(){
+ lapTimes.push(t-lapStart);state='done';
+ isBest=!best||t<best;
+ if(isBest){best=t;store.set('best',String(t))}
+ beep(800,.15);setTimeout(()=>beep(1000,.15),150);setTimeout(()=>beep(1300,.3),300);
+}
+
+/* drawing */
+function drawCar(cx,y){
+ g.save();g.translate(cx,y);
+ if(inv>0&&Math.floor(inv*12)%2)g.globalAlpha=.35;
+ if(boost>0){g.fillStyle='#ff9f1c';g.beginPath();g.moveTo(-14,0);g.lineTo(0,34+Math.random()*10);g.lineTo(14,0);g.fill()}
+ g.fillStyle='#111';g.beginPath();g.arc(-34,-8,12,0,7);g.arc(34,-8,12,0,7);g.fill();
+ g.fillStyle='#138a43';g.fillRect(-42,-30,84,20);
+ g.fillStyle='#f7c61b';
+ g.beginPath();g.moveTo(-40,-30);g.lineTo(-34,-70);g.quadraticCurveTo(0,-84,34,-70);g.lineTo(40,-30);g.closePath();g.fill();
+ g.fillStyle='#231f20';g.fillRect(-28,-62,56,18);
+ g.fillStyle='#fff';g.fillRect(-36,-24,10,6);g.fillRect(26,-24,10,6);
+ g.restore();
+}
+function draw(){
+ g.save();
+ if(shake>0)g.translate((Math.random()-.5)*10*shake,(Math.random()-.5)*10*shake);
+ const gr=g.createLinearGradient(0,0,0,HZ);gr.addColorStop(0,'#ef8a3a');gr.addColorStop(1,'#f9c76b');
+ g.fillStyle=gr;g.fillRect(0,0,W,HZ);
+ g.fillStyle='#ffe27a';g.beginPath();g.arc(W*.7-road(z)*40,HZ-70,36,0,7);g.fill();
+ const cz=road(z);
+ for(let y=HZ;y<H;y++){
+  const tt=(y-HZ+1)/(H-HZ),d=CAM/tt,wz=z+d;
+  const half=tt*W*.46,mid=W/2+(road(wz)-cz)*W*1.2*tt;
+  const band=Math.floor(wz/120)%2;
+  g.fillStyle=band?'#3f9c58':'#379150';g.fillRect(0,y,W,1);
+  g.fillStyle=band?'#e63946':'#fff';g.fillRect(mid-half*1.12,y,half*2.24,1);
+  g.fillStyle=band?'#3b4252':'#353b49';g.fillRect(mid-half,y,half*2,1);
+  if(Math.floor(wz/160)%2){g.fillStyle='#fff';g.fillRect(mid-half*.02,y,half*.04,1)}
+ }
+ const zm=z%L,vis=[];
+ for(const o of objs){if(!o.on)continue;const d=(o.z-zm+L)%L;if(d>CAM&&d<2400)vis.push([d,o])}
+ vis.sort((a,b)=>b[0]-a[0]);
+ for(const [d,o] of vis){
+  const tt=CAM/d,yy=HZ+tt*(H-HZ),half=tt*W*.46;
+  const sx=W/2+(road(z+d)-cz)*W*1.2*tt+o.x*half;
+  if(o.k==='coin'){const r=Math.max(2,20*tt);g.fillStyle='#f4b400';g.beginPath();g.arc(sx,yy-r,r,0,7);g.fill();g.fillStyle='#ffe082';g.beginPath();g.arc(sx,yy-r,r*.6,0,7);g.fill()}
+  else if(o.k==='rock'){const w=90*tt,h=62*tt;g.fillStyle='#7d828d';g.beginPath();g.moveTo(sx-w/2,yy);g.lineTo(sx-w*.3,yy-h);g.lineTo(sx+w*.2,yy-h*.9);g.lineTo(sx+w/2,yy);g.fill();g.fillStyle='#a3a8b3';g.fillRect(sx-w*.25,yy-h*.9,w*.25,h*.12)}
+  else{const w=60*tt;g.fillStyle='#16c172';g.fillRect(sx-w/2,yy-w,w,w);g.fillStyle='#fff';g.beginPath();g.moveTo(sx-w*.15,yy-w*.85);g.lineTo(sx+w*.2,yy-w*.5);g.lineTo(sx,yy-w*.5);g.lineTo(sx+w*.15,yy-w*.15);g.lineTo(sx-w*.2,yy-w*.55);g.lineTo(sx,yy-w*.55);g.fill()}
+ }
+ const ct=CAM/70;
+ drawCar(W/2+x*W*.46*ct,HZ+ct*(H-HZ)+((state==='race'&&v>50)?Math.sin(t*40)*1.2:0));
+ g.restore();
+ hud();
+}
+function text(s,px,py,size,col,al,w){g.font=(w||'700')+' '+size+'px system-ui,sans-serif';g.textAlign=al||'left';g.fillStyle=col||'#fff';g.fillText(s,px,py)}
+function hud(){
+ g.fillStyle='rgba(15,18,25,.55)';g.fillRect(0,0,W,44);
+ text('Coins '+coins,14,29,20);
+ text('Lap '+Math.min(lap,LAPS)+'/'+LAPS,W/2-50,29,20,'#ffd23f','center');
+ text(fmt(t),W/2+60,29,20,'#fff','left');
+ if(best)text('Best '+fmt(best),14,H-14,16,'#fff','left','600');
+ if(bannerT>0)text(banner,W/2,150,26,'#fff','center');
+ if(state==='count')text(String(Math.max(1,Math.ceil(cd))),W/2,H/2-40,110,'#ffd23f','center','800');
+ if(state==='ready'||state==='done')panel();
+}
+function panel(){
+ g.fillStyle='rgba(15,18,25,.82)';g.fillRect(40,150,W-80,380);
+ const c=W/2;
+ if(state==='ready'){
+  text('Auto Rally',c,215,40,'#ffd23f','center','800');
+  text('3 laps. Beat the clock.',c,255,18,'#fff','center','500');
+  text('Steer: arrow keys, A and D,',c,310,17,'#cfd6e4','center','500');
+  text('or hold the left / right side of the screen.',c,334,17,'#cfd6e4','center','500');
+  text('Coins add up. Rocks slow you down.',c,376,17,'#cfd6e4','center','500');
+  text('Green boxes give a speed boost.',c,400,17,'#cfd6e4','center','500');
+  text('Tap or press Space to start',c,480,22,'#16c172','center');
+ }else{
+  text('Finished',c,205,36,'#ffd23f','center','800');
+  text(fmt(t),c,262,46,'#fff','center','800');
+  text(isBest?'New best time!':'Best '+fmt(best),c,298,20,isBest?'#16c172':'#cfd6e4','center');
+  lapTimes.forEach((lt,i)=>text('Lap '+(i+1)+'   '+fmt(lt),c,338+i*28,18,'#cfd6e4','center','500'));
+  text('Coins collected: '+coins,c,438,18,'#fff','center','500');
+  text('Tap or press Space to race again',c,490,20,'#16c172','center');
+ }
+}
+
+/* input */
+addEventListener('keydown',e=>{
+ const k=e.key.toLowerCase();
+ if(k==='arrowleft'||k==='a')keys.left=true;
+ if(k==='arrowright'||k==='d')keys.right=true;
+ if(k===' '||k==='enter'){if(state==='ready'||state==='done')start();e.preventDefault()}
+ if(k.startsWith('arrow'))e.preventDefault();
+});
+addEventListener('keyup',e=>{
+ const k=e.key.toLowerCase();
+ if(k==='arrowleft'||k==='a')keys.left=false;
+ if(k==='arrowright'||k==='d')keys.right=false;
+});
+function setDir(e){const r=cv.getBoundingClientRect();dir=(e.clientX-r.left)<r.width/2?-1:1}
+cv.addEventListener('pointerdown',e=>{if(state==='ready'||state==='done'){start();return}setDir(e)});
+cv.addEventListener('pointermove',e=>{if(e.buttons||e.pointerType==='touch')if(dir)setDir(e)});
+['pointerup','pointercancel','pointerleave'].forEach(n=>cv.addEventListener(n,()=>{dir=0}));
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+
+let last=performance.now();
+function loop(now){
+ const dt=Math.min(.033,(now-last)/1000);last=now;
+ update(dt);draw();requestAnimationFrame(loop);
+}
+objs=gen();
+requestAnimationFrame(loop);
+</script>
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(function(){});</script>
+</body>
+</html>
